@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<meta charset="UTF-8">
+<title>Solar Tracker Dashboard</title>
+
+<style>
+
+body{
+font-family:Arial;
+background:#f5f5f5;
+}
+
+.box{
+border:1px solid #ccc;
+padding:10px;
+margin:10px;
+background:white;
+}
+
+canvas{
+border:1px solid #555;
+margin:10px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h2>Solar Tracker Dashboard</h2>
+
+<div class="box">
+
+Latitude
+<input id="lat" value="9.5">
+
+Longitude
+<input id="lon" value="77.5">
+
+Date
+<input id="date" type="date">
+
+Time
+<input id="time" type="time">
+
+<button onclick="startTracking()">Calculate Solar</button>
+
+</div>
+
+
+<div class="box">
+
+SN Angle
+<input id="sn" value="0">
+
+EW Angle
+<input id="ew" value="0">
+
+<button onclick="sendMotor()">Move Motor</button>
+
+</div>
+
+
+<div class="box">
+
+Voltage
+<span id="voltage">0</span> V
+<br>
+
+Average
+<span id="avg">0</span> V
+<br>
+
+Cleaning
+<span id="clean">OFF</span>
+<br>
+
+Pump
+<span id="pump">OFF</span>
+
+</div>
+
+
+<div class="box" id="info"></div>
+
+<canvas id="c" width="900" height="550"></canvas>
+
+
+<script>
+
+const canvas=document.getElementById("c")
+const ctx=canvas.getContext("2d")
+
+const CX=450
+const CY=380
+const SCALE=500
+
+let realtimeTracking=false
+
+const panel=[
+
+{x:-80,y:-50,z:0},
+{x:80,y:-50,z:0},
+{x:80,y:50,z:0},
+{x:-80,y:50,z:0}
+
+]
+
+const panelPos={x:0,y:-60,z:0}
+
+let azimuth=180
+let zenith=45
+
+
+function rotateX(p,a){
+
+let r=a*Math.PI/180
+
+return{
+x:p.x,
+y:p.y*Math.cos(r)-p.z*Math.sin(r),
+z:p.y*Math.sin(r)+p.z*Math.cos(r)
+}
+
+}
+
+function rotateY(p,a){
+
+let r=a*Math.PI/180
+
+return{
+x:p.x*Math.cos(r)+p.z*Math.sin(r),
+y:p.y,
+z:-p.x*Math.sin(r)+p.z*Math.cos(r)
+}
+
+}
+
+function project(p){
+
+let s=SCALE/(SCALE+p.z)
+
+return{
+x:CX+p.x*s,
+y:CY-p.y*s
+}
+
+}
+
+
+function drawSunPath(){
+
+ctx.strokeStyle="rgba(255,165,0,0.3)"
+ctx.lineWidth=2
+
+ctx.beginPath()
+
+for(let a=0;a<=180;a+=5){
+
+let ze=30+30*Math.sin(a*Math.PI/180)
+
+let el=90-ze
+
+let azR=a*Math.PI/180
+let elR=el*Math.PI/180
+
+let x=Math.sin(azR)*Math.cos(elR)
+let y=Math.sin(elR)
+let z=Math.cos(azR)*Math.cos(elR)
+
+let p=project({x:x*300,y:y*300,z:z*300})
+
+if(a===0)
+ctx.moveTo(p.x,p.y)
+else
+ctx.lineTo(p.x,p.y)
+
+}
+
+ctx.stroke()
+
+}
+
+
+
+function draw(){
+
+ctx.clearRect(0,0,canvas.width,canvas.height)
+
+drawSunPath()
+
+let elevation=90-zenith
+
+let azR=azimuth*Math.PI/180
+let elR=elevation*Math.PI/180
+
+let sunDir={
+x:Math.sin(azR)*Math.cos(elR),
+y:Math.sin(elR),
+z:Math.cos(azR)*Math.cos(elR)
+}
+
+let sunPos3D={
+x:sunDir.x*300,
+y:sunDir.y*300,
+z:sunDir.z*300
+}
+
+let sun2D=project(sunPos3D)
+
+ctx.beginPath()
+ctx.arc(sun2D.x,sun2D.y,16,0,Math.PI*2)
+ctx.fillStyle="orange"
+ctx.fill()
+
+
+let yaw=Math.atan2(sunDir.x,sunDir.z)*180/Math.PI
+
+let pitch=-Math.atan2(
+sunDir.y,
+Math.sqrt(sunDir.x**2+sunDir.z**2)
+)*180/Math.PI
+
+
+let panelRot=panel.map(p=>{
+
+let r=rotateY(rotateX(p,pitch),yaw)
+
+return{
+x:r.x+panelPos.x,
+y:r.y+panelPos.y,
+z:r.z+panelPos.z
+}
+
+})
+
+
+let panel2D=panelRot.map(project)
+
+ctx.beginPath()
+
+ctx.moveTo(panel2D[0].x,panel2D[0].y)
+
+panel2D.slice(1).forEach(p=>ctx.lineTo(p.x,p.y))
+
+ctx.closePath()
+
+ctx.fillStyle="lightgray"
+ctx.fill()
+ctx.stroke()
+
+
+let panelCenter=project(panelPos)
+
+ctx.strokeStyle="orange"
+ctx.beginPath()
+ctx.moveTo(sun2D.x,sun2D.y)
+ctx.lineTo(panelCenter.x,panelCenter.y)
+ctx.stroke()
+
+
+info.innerHTML=
+"Azimuth: "+azimuth.toFixed(2)+"° <br>"+
+"Zenith: "+zenith.toFixed(2)+"°"
+
+}
+
+
+
+function calcSolar(){
+
+fetch("/solar",{
+
+method:"POST",
+
+headers:{
+"Content-Type":"application/json"
+},
+
+body:JSON.stringify({
+
+lat:lat.value,
+lon:lon.value,
+date:date.value,
+time:time.value
+
+})
+
+})
+
+.then(r=>r.json())
+
+.then(d=>{
+
+azimuth=d.azimuth
+zenith=d.zenith
+
+sn.value=d.sn
+ew.value=d.ew
+
+draw()
+
+})
+
+}
+
+
+function startTracking(){
+
+calcSolar()
+
+realtimeTracking=true
+
+}
+
+
+function sendMotor(){
+
+fetch("/set_target",{
+
+method:"POST",
+
+headers:{
+"Content-Type":"application/json"
+},
+
+body:JSON.stringify({
+
+sn:sn.value,
+ew:ew.value
+
+})
+
+})
+
+}
+
+
+
+function updateStatus(){
+
+fetch("/status")
+
+.then(r=>r.json())
+
+.then(d=>{
+
+voltage.innerText=d.voltage.toFixed(2)
+avg.innerText=d.avg_voltage.toFixed(2)
+
+clean.innerText=d.cleaning?"ACTIVE":"OFF"
+pump.innerText=d.pump?"ON":"OFF"
+
+sn.value=d.sn
+ew.value=d.ew
+
+})
+
+}
+
+
+function setCurrentTime(){
+
+let now=new Date()
+
+let date=now.toISOString().split("T")[0]
+
+let time=
+String(now.getHours()).padStart(2,'0')+":"+
+String(now.getMinutes()).padStart(2,'0')
+
+document.getElementById("date").value=date
+document.getElementById("time").value=time
+
+}
+
+
+setCurrentTime()
+
+
+setInterval(function(){
+
+if(realtimeTracking){
+
+setCurrentTime()
+
+calcSolar()
+
+}
+
+},60000)
+
+
+setInterval(updateStatus,3000)
+
+
+draw()
+
+</script>
+
+</body>
+</html>
